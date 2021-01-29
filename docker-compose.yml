@@ -1,0 +1,76 @@
+version: "3.8"
+
+x-env: &x-env
+  env_file:
+    - deploys/prod.env
+
+services:
+  movies_admin:
+    build:
+      context: movie_admin
+    volumes:
+      - movie_admin_static:/static
+    <<: *x-env
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:12.1
+    restart: always
+    <<: *x-env
+    environment:
+      POSTGRES_PASSWORD: devpass
+    volumes:
+      - postgresdb:/var/lib/postgresql/data
+
+  nginx:
+    image: nginx:1.19.2
+    restart: always
+    <<: *x-env
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx_sites:/etc/nginx/conf.d:ro
+      - movie_admin_static:/static
+    ports:
+      - 8082:80
+      - 8081:81
+    depends_on:
+      - movies_admin
+      - search_api
+    
+  elasticsearch:
+    image: elasticsearch:7.10.1
+    environment:
+      discovery.type: "single-node"
+    ports:
+      - 9200:9200
+    volumes:
+      - elasticdb:/usr/share/elasticsearch/data
+
+  redis:
+    container_name: etl_redis
+    image: redis:6-alpine
+    restart: always
+    volumes:
+      - redisdata:/data
+
+  etl:
+    build:
+      context: postgres_to_es
+    <<: *x-env
+    depends_on:
+      - elasticsearch
+      - redis
+
+  search_api:
+    build:
+      context: search_api
+    <<: *x-env
+    depends_on:
+      - elasticsearch
+
+volumes:
+  postgresdb:
+  movie_admin_static:
+  elasticdb:
+  redisdata:

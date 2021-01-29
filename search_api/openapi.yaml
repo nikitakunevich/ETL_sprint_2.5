@@ -1,0 +1,183 @@
+openapi: 3.0.1
+info:
+  title: Spec
+  version: 1.0.0
+
+servers:
+- url: https://localhost/api
+- url: http://localhost/api
+tags:
+- name: movies
+  description: Всё о фильмах
+paths:
+  /movies:
+    get:
+      tags:
+      - movies
+      summary: Список фильмов
+      operationId: listMovies
+      parameters:
+      - name: limit
+        in: query
+        description: количество объектов, которое надо вывести
+        schema:
+          type: integer
+          default: 50
+      - name: page
+        in: query
+        description: номер страницы
+        schema:
+          type: integer
+          default: 1
+      - name: sort
+        in: query
+        description: свойство, по которому нужно отсортировать результат
+        schema:
+          type: string
+          default: id
+          enum:
+          - id
+          - title
+          - imdb_rating
+      - name: sort_order
+        in: query
+        description: порядок сортировки
+        schema:
+          type: string
+          default: asc
+          enum:
+          - asc
+          - desc
+      - name: search
+        in: query
+        description: "неточный поиск по названию, описанию, актёрам, сценаристам и\
+          \ режиссёрам фильма\nПредставьте, что вы вбили в поиск Яндекса \"Звёздны\
+          е войны\" или \"Джордж Лукас\" или \"Лукас войны\"  вам выводятся соотве\
+          тствующие фильмы. "
+        schema:
+          type: string
+      responses:
+        200:
+          description: ""
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ShortMovie'
+        400:
+          description: "неправильный формат тела запроса"
+        422:
+          description: "неправильное тело запроса"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+  /movies/{movieID}:
+    get:
+      tags:
+      - movies
+      summary: Получить фильм
+      description: Получить фильм
+      operationId: getMovieByID
+      parameters:
+      - name: movieID
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        200:
+          description: ""
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Movie'
+        404:
+          description: Фильм не найден
+          content: {}
+components:
+  schemas:
+    ShortMovie:
+      required:
+      - id
+      - title
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        imdb_rating:
+          type: number
+          format: float
+    Writer:
+      required:
+      - id
+      - name
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+    Actor:
+      required:
+      - id
+      - name
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+    Movie:
+      required:
+      - id
+      - title
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        imdb_rating:
+          type: number
+          format: float
+        writers:
+          type: array
+          items:
+            $ref: '#/components/schemas/Writer'
+        actors:
+          type: array
+          items:
+            $ref: '#/components/schemas/Actor'
+        genre:
+          type: array
+          items:
+            type: string
+        director:
+          type: array
+          items:
+            type: string
+    ValidationError:
+      type: object
+      properties:
+        detail:
+          type: array
+          items:
+            type: object
+            properties:
+              loc:
+                type: array
+                example: ["query", "limit"]
+                items:
+                  type: string
+              msg:
+                example: "value is not a valid integer"
+                type: string
+              type:
+                type: string
+                example: "type_error.integer"
