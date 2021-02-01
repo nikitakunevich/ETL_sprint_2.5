@@ -112,6 +112,7 @@ def fetch_sqlite_data(connection) -> OriginalData:
         writer_names=writer_names
     )
 
+
 def update_transformed_persons(original_persons, transformed_persons,
                                persons_cache, name_getter: Callable[[Any], str]):
     for person in original_persons:
@@ -174,40 +175,19 @@ def migrate_data_to_new_schema(original_data: OriginalData) -> TransformedData:
         # ------------ Создание объектов таблиц person и movie_person. --------------------
 
         # Обновляем список режиссеров
-        update_transformed_persons(original_movie.get_directors(),
-                                   transformed_persons,
-                                   directors_name_to_new_id,
-                                   lambda id_: id_)
-
-        movie_directors = get_transformed_movie_persons(
-            transformed_movie, original_movie.get_directors(),
-            directors_name_to_new_id, 'director'
-        )
-        transformed_movie_persons.extend(movie_directors)
+        update_person_role_list(directors_name_to_new_id, original_movie.get_directors(), transformed_movie,
+                                transformed_movie_persons,
+                                transformed_persons, lambda _id: _id, 'director')
 
         # Обновляем список актеров
-        update_transformed_persons(original_data.movie_actors.get(original_movie.id, []),
-                                   transformed_persons,
-                                   actors_old_id_to_new_id,
-                                   lambda old_id: original_data.actor_names[old_id])
-
-        movie_actors = get_transformed_movie_persons(
-            transformed_movie, original_data.movie_actors[original_movie.id],
-            actors_old_id_to_new_id, 'actor'
-        )
-        transformed_movie_persons.extend(movie_actors)
-
+        update_person_role_list(actors_old_id_to_new_id, original_data.movie_actors.get(original_movie.id, []),
+                                transformed_movie, transformed_movie_persons, transformed_persons,
+                                lambda old_id: original_data.actor_names[old_id], 'actor')
+        
         # Обновляем список писателей
-        update_transformed_persons(original_movie.writers,
-                                   transformed_persons,
-                                   writers_old_id_to_new_id,
-                                   lambda old_id: original_data.writer_names[old_id])
-
-        movie_writers = get_transformed_movie_persons(
-            transformed_movie, original_movie.writers,
-            writers_old_id_to_new_id, 'writer'
-        )
-        transformed_movie_persons.extend(movie_writers)
+        update_person_role_list(writers_old_id_to_new_id, original_movie.writers,
+                                transformed_movie, transformed_movie_persons, transformed_persons,
+                                lambda old_id: original_data.writer_names[old_id], 'writers')
 
     return TransformedData(
         film_works=transformed_movies,
@@ -216,6 +196,19 @@ def migrate_data_to_new_schema(original_data: OriginalData) -> TransformedData:
         film_work_genres=transformed_movie_genres,
         genres=transformed_genres,
     )
+
+
+def update_person_role_list(old_id_to_new_id, person_list, transformed_movie, transformed_movie_persons,
+                            transformed_persons, name_getter, role):
+    update_transformed_persons(person_list,
+                               transformed_persons,
+                               old_id_to_new_id,
+                               name_getter)
+    role_persons_list = get_transformed_movie_persons(
+        transformed_movie, person_list,
+        old_id_to_new_id, role
+    )
+    transformed_movie_persons.extend(role_persons_list)
 
 
 def insert_rows_into_table(cursor, table_name: str, rows: Sequence[Sequence]):

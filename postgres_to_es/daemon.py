@@ -1,12 +1,12 @@
 import sys
 import os
 import argparse
-import dbm
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import wraps
-from typing import List, Optional, Dict, Any, Union, Protocol
+from typing import List, Optional, Dict, Any, Union, Callable, Sequence
 
 import psycopg2
 from elasticsearch import Elasticsearch, helpers
@@ -15,6 +15,8 @@ from psycopg2 import sql
 from loguru import logger
 from pydantic import BaseModel
 from redis import Redis
+
+from postgres_to_es.state import State, RedisState
 
 logger.remove()
 logger.add(sys.stderr, level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -52,51 +54,6 @@ class MovieElastic(BaseModel):
     writers: List[Dict[ObjectId, ObjectName]]
 
 
-class State(Protocol):
-
-    def state_set_key(self, key, value: str) -> None:
-        ...
-
-    def state_get_key(self, key, default: str = None) -> str:
-        ...
-
-
-class DBMState(State):
-    def state_set_key(self, key, value: str) -> None:
-        """Запись значения по ключу в dbm."""
-        with dbm.open('state', 'c') as db:
-            db[key] = value.encode()
-
-    def state_get_key(self, key, default: str = None) -> str:
-        """Чтение значения по ключу из dbm."""
-
-        with dbm.open('state', 'c') as db:
-            if default is not None:
-                return db.setdefault(key, default.encode()).decode()
-
-            return db[key].decode()
-
-
-class RedisState:
-    def __init__(self, redis_adapter: Redis):
-        self.redis_adapter = redis_adapter
-
-    @backoff()
-    def state_set_key(self, key, value: str) -> None:
-        self.redis_adapter.set(key, value.encode())
-
-    @backoff()
-    def state_get_key(self, key, default: str = None) -> str:
-        data = self.redis_adapter.get(key)
-        if data:
-            data = data.decode()
-        else:
-            self.state_set_key(key, default)
-            data = default
-
-        return data
-
-
 @backoff()
 def query_postgresql(pg_url: str, template: Union[str, sql.Composable], params: Dict[str, Any]) -> List[dict]:
     """Функция для запросов к postgresql."""
@@ -125,12 +82,9 @@ def get_updated_postgres_entries(table: str, pg_url: str, target, state: State, 
         state.state_get_key(f'{table}.updated_at', datetime_to_iso_string(datetime.fromtimestamp(0, tz=timezone.utc))))
     last_id = state.state_get_key(f'{table}.last_id', str(uuid.UUID(int=0)))
 
-    if not columns:
-        column_string = '*'
-    else:
-        column_string = ','.join(columns)
+    column_names = ','.join(columns) if columns else '*'
     query = sql.SQL(f"""
-            select {column_string}, {timestamp_field}
+            select {column_names}, {timestamp_field}
             from {table}
             where ({timestamp_field} = %(timestamp)s and id > %(last_id)s)
                   or {timestamp_field} > %(timestamp)s
@@ -229,8 +183,10 @@ def transform(target):
         logger.debug('transforming')
         batch = []
         for film_work in film_works:
-            if not film_work['genres']: film_work['genres'] = []
-            if not film_work['persons']: film_work['persons'] = []
+            if not film_work['genres']:
+                film_work['genres'] = []
+            if not film_work['persons']:
+                film_work['persons'] = []
             genres_names = [genre['name'] for genre in film_work['genres']]
             actors = [{'id': person['id'], 'name': person['full_name']}
                       for person in film_work['persons']
@@ -307,6 +263,8 @@ if __name__ == '__main__':
                         help="URL в postgreSQL формате для подключения к базе.", required=False)
     parser.add_argument("--elastic-url", dest="elastic_host", default="http://localhost:9200",
                         help="URL ElasticSearch.", required=False)
+    parser.add_argument("--redis-host", dest="redis_host", default='localhost',
+                        help="Хост Redis.", required=False)
     parser.add_argument("--poll-period", dest="poll_period", default=2,
                         help="Пауза между обновлением данных в секундах.", required=False)
     parser.add_argument("--pg-batch", dest="pg_batch_size", default=1000,
@@ -317,97 +275,73 @@ if __name__ == '__main__':
 
     logger.info("Starting ETL runner.")
 
-    redis = Redis(host=os.environ.get('REDIS_HOST', 'localhost'))
+    redis = Redis(host=args.redis_host)
     state = RedisState(redis_adapter=redis)
 
     psycopg2.extras.register_uuid()
+
+
+    @dataclass(frozen=True)
+    class ETLProcessConfig:
+        table: str
+        postgres_url: str
+        elastic_host: str
+
+        state: State
+        film_id_function: Callable
+        get_film_id_args: Sequence
+
+        timestamp_field: str = 'updated_at'
+        pg_batch_size: int = 1000
+        es_batch_size: int = 1000
+
+        def run(self):
+            get_updated_postgres_entries(
+                self.table,
+                self.postgres_url,
+                self.film_id_function(
+                    *self.get_film_id_args,
+                    denormalize_film_data(
+                        self.postgres_url,
+                        transform(
+                            batcher(self.es_batch_size, load_to_elastic(self.elastic_host))
+                        )
+                    )
+                ),
+                self.state,
+                self.pg_batch_size,
+                self.timestamp_field
+            )
+
+
+    etl_processes = [
+        ETLProcessConfig(table="public.film_work", postgres_url=args.postgres_url, elastic_host=args.elastic_host,
+                         film_id_function=table_with_fwkey_get_film_ids, get_film_id_args=('id',), state=state),
+
+        ETLProcessConfig(table="public.person", postgres_url=args.postgres_url, elastic_host=args.elastic_host,
+                         film_id_function=get_films_ids_by_join,
+                         get_film_id_args=("public.person_film_work", "person_id"),
+                         state=state),
+
+        ETLProcessConfig(table="public.genre", postgres_url=args.postgres_url, elastic_host=args.elastic_host,
+                         film_id_function=get_films_ids_by_join,
+                         get_film_id_args=("public.genre_film_work", "genre_id"),
+                         state=state),
+
+        ETLProcessConfig(table="public.person_film_work", postgres_url=args.postgres_url,
+                         elastic_host=args.elastic_host, film_id_function=table_with_fwkey_get_film_ids,
+                         get_film_id_args=("film_work_id",), timestamp_field='created_at',
+                         state=state),
+
+        ETLProcessConfig(table="public.genre_film_work", postgres_url=args.postgres_url,
+                         elastic_host=args.elastic_host, film_id_function=table_with_fwkey_get_film_ids,
+                         get_film_id_args=("film_work_id",), timestamp_field='created_at',
+                         state=state),
+    ]
+
     while True:
         logger.debug("Checking if any updated entries.")
-
-        get_updated_postgres_entries(
-            "public.film_work",
-            args.postgres_url,
-            table_with_fwkey_get_film_ids(
-                'id',
-                denormalize_film_data(
-                    args.postgres_url,
-                    transform(
-                        batcher(args.es_batch_size, load_to_elastic(args.elastic_host))
-                    )
-                )
-            ),
-            state,
-            args.pg_batch_size,
-        )
-
-        get_updated_postgres_entries(
-            "public.person",
-            args.postgres_url,
-            get_films_ids_by_join(
-                args.postgres_url,
-                "public.person_film_work",
-                "person_id",
-                denormalize_film_data(
-                    args.postgres_url,
-                    transform(
-                        batcher(args.es_batch_size, load_to_elastic(args.elastic_host))
-                    )
-                )
-            ),
-            state,
-            args.pg_batch_size,
-        )
-
-        get_updated_postgres_entries(
-            "public.genre",
-            args.postgres_url,
-            get_films_ids_by_join(
-                args.postgres_url,
-                "public.genre_film_work",
-                "genre_id",
-                denormalize_film_data(
-                    args.postgres_url,
-                    transform(
-                        batcher(args.es_batch_size, load_to_elastic(args.elastic_host))
-                    )
-                )
-            ),
-            state,
-            args.pg_batch_size,
-        )
-
-        get_updated_postgres_entries(
-            "public.person_film_work",
-            args.postgres_url,
-            table_with_fwkey_get_film_ids(
-                "film_work_id",
-                denormalize_film_data(
-                    args.postgres_url,
-                    transform(
-                        batcher(args.es_batch_size, load_to_elastic(args.elastic_host))
-                    )
-                )
-            ),
-            state,
-            args.pg_batch_size,
-            'created_at'
-        )
-
-        get_updated_postgres_entries(
-            "public.genre_film_work",
-            args.postgres_url,
-            table_with_fwkey_get_film_ids(
-                "film_work_id",
-                denormalize_film_data(
-                    args.postgres_url,
-                    transform(
-                        batcher(args.es_batch_size, load_to_elastic(args.elastic_host))
-                    )
-                )
-            ),
-            state,
-            args.pg_batch_size,
-            'created_at'
-        )
+        for etl_process in etl_processes:
+            etl_process.run()
 
         time.sleep(args.poll_period)

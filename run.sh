@@ -21,11 +21,11 @@ case $1 in
     docker-compose up -d search_api
     docker-compose logs -f
   ;;
-  start_etl)
-    docker-compose up etl
-  ;;
   load_es_index)
     curl  -XPUT http://localhost:9200/movies -H 'Content-Type: application/json' -d @es.schema.json
+  ;;
+  start_etl)
+    docker-compose up etl
   ;;
   stop)
     docker-compose down -v --remove-orphans

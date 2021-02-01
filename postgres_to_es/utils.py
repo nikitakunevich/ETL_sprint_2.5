@@ -42,9 +42,10 @@ def backoff(start_sleep_time=0.1, factor=2, border_sleep_time=10):
             except Exception as e:
                 logger.opt(exception=True).warning('Got exception in backoff:')
                 time.sleep(next_sleep_time)
-                next_sleep_time *= factor
                 if next_sleep_time >= border_sleep_time:
                     next_sleep_time = border_sleep_time
+                else:
+                    next_sleep_time *= factor
                 return inner(*args, **kwargs)
 
         return inner
