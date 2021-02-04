@@ -296,6 +296,7 @@ if __name__ == '__main__':
         es_batch_size: int = 1000
 
         def run(self):
+            logger.debug(f"Running process for table: {self.table}")
             get_updated_postgres_entries(
                 self.table,
                 self.postgres_url,
@@ -320,12 +321,12 @@ if __name__ == '__main__':
 
         ETLProcessConfig(table="public.person", postgres_url=args.postgres_url, elastic_host=args.elastic_host,
                          film_id_function=get_films_ids_by_join,
-                         get_film_id_args=("public.person_film_work", "person_id"),
+                         get_film_id_args=(args.postgres_url, "public.person_film_work", "person_id"),
                          state=state),
 
         ETLProcessConfig(table="public.genre", postgres_url=args.postgres_url, elastic_host=args.elastic_host,
                          film_id_function=get_films_ids_by_join,
-                         get_film_id_args=("public.genre_film_work", "genre_id"),
+                         get_film_id_args=(args.postgres_url, "public.genre_film_work", "genre_id"),
                          state=state),
 
         ETLProcessConfig(table="public.person_film_work", postgres_url=args.postgres_url,
