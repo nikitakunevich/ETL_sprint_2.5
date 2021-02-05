@@ -44,14 +44,16 @@ class MovieElastic(BaseModel):
     """Схема для ES документа с фильмами."""
     id: str
     imdb_rating: Optional[float]
-    genres_names: List[str]
     title: str
     description: Optional[str]
-    directors: List[str]
     actors_names: List[str]
     writers_names: List[str]
+    directors_names: List[str]
+    genres_names: List[str]
     actors: List[Dict[ObjectId, ObjectName]]
     writers: List[Dict[ObjectId, ObjectName]]
+    directors: List[Dict[ObjectId, ObjectName]]
+    genres: List[Dict[ObjectId, ObjectName]]
 
 
 @backoff()
@@ -187,27 +189,36 @@ def transform(target):
                 film_work['genres'] = []
             if not film_work['persons']:
                 film_work['persons'] = []
-            genres_names = [genre['name'] for genre in film_work['genres']]
             actors = [{'id': person['id'], 'name': person['full_name']}
                       for person in film_work['persons']
                       if person['role'] == 'actor']
             writers = [{'id': person['id'], 'name': person['full_name']}
                        for person in film_work['persons']
                        if person['role'] == 'writer']
+            directors = [{'id': person['id'], 'name': person['full_name']}
+                         for person in film_work['persons']
+                         if person['role'] == 'director']
 
-            directors = [person['full_name'] for person in film_work['persons'] if person['role'] == 'director']
+            genres = [{'id': genre['id'], 'name': genre['name']}
+                      for genre in film_work['genres']]
+
+            directors_names = [person['full_name'] for person in film_work['persons'] if person['role'] == 'director']
             actors_names = [person['full_name'] for person in film_work['persons'] if person['role'] == 'actor']
             writers_names = [person['full_name'] for person in film_work['persons'] if person['role'] == 'writer']
+            genres_names = [genre['name'] for genre in film_work['genres']]
+
             movie = MovieElastic(id=str(film_work['id']),
                                  imdb_rating=film_work['rating'],
                                  genres_names=genres_names,
                                  title=film_work['title'],
                                  description=film_work['description'],
-                                 directors=directors,
                                  actors_names=actors_names,
                                  writers_names=writers_names,
+                                 directors_names=directors_names,
                                  actors=actors,
-                                 writers=writers)
+                                 writers=writers,
+                                 directors=directors,
+                                 genres=genres)
 
             batch.append(movie.dict())
         target.send(batch)
