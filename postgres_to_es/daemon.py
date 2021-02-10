@@ -1,22 +1,22 @@
-import argparse
-import os
 import sys
+import os
+import argparse
 import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import wraps
-from typing import Any, Callable, Dict, List, Optional, Sequence, Union
+from typing import List, Optional, Dict, Any, Union, Callable, Sequence
 
 import psycopg2
 from elasticsearch import Elasticsearch, helpers
-from loguru import logger
-from psycopg2 import sql
 from psycopg2.extras import DictCursor
+from psycopg2 import sql
+from loguru import logger
 from pydantic import BaseModel
 from redis import Redis
 
-from postgres_to_es.state import RedisState, State
+from postgres_to_es.state import State, RedisState
 
 logger.remove()
 logger.add(sys.stderr, level=os.environ.get("LOG_LEVEL", "INFO"))
