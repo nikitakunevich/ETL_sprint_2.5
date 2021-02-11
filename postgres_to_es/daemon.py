@@ -111,8 +111,8 @@ def get_updated_postgres_entries(table: str, pg_url: str, target, state: State, 
         target.send(rows)
         current_last_timestamp = datetime_to_iso_string(rows[-1][timestamp_field])
         current_last_id = str(rows[-1]['id'])
-        state.state_set_key(f'{table}.updated_at', current_last_timestamp)
-        state.state_set_key(f'{table}.last_id', current_last_id)
+        state.state_set_key(f'{table}.{es_index}.updated_at', current_last_timestamp)
+        state.state_set_key(f'{table}.{es_index}.last_id', current_last_id)
         logger.debug("Updated state with updated_at: {}, last_id: {}", current_last_timestamp, current_last_id)
     else:
         logger.debug("No updated rows in table {}", table)
