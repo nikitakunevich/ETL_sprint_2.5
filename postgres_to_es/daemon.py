@@ -56,17 +56,12 @@ class MovieElastic(BaseModel):
     genres: List[Dict[ObjectId, ObjectName]]
 
 
-class PersonFilmwork(BaseModel):
-    id: str
-    title: str
-
-
 class PersonElastic(BaseModel):
     """Схема для ES документа с персонами."""
     id: str
     full_name: str
-    filmwork_titles: List[str]
-    filmworks: List[PersonFilmwork]
+    roles: List[str]
+    film_ids: List[str]
 
 
 @backoff()
@@ -79,8 +74,7 @@ def query_postgresql(pg_url: str, template: Union[str, sql.Composable], params: 
     return results
 
 
-def get_updated_postgres_entries(table: str, pg_url: str, target, state: State,
-                                 es_index: str, batch_size: int = 1000,
+def get_updated_postgres_entries(table: str, pg_url: str, target, state: State, es_index: str, batch_size: int = 1000,
                                  timestamp_field: str = 'updated_at',
                                  columns: List[str] = None) -> None:
     """Producer, отправляющий в корутину обновленные записи из таблицы.
@@ -89,6 +83,7 @@ def get_updated_postgres_entries(table: str, pg_url: str, target, state: State,
     :param pg_url: URL к PostgreSQL.
     :param target: Корутина-получатель.
     :param state: Объект для сохранения состояния ETL.
+    :param es_index: Имя индекса в elastic search для формирования пути для сохранения состояния ETL.
     :param batch_size: Размер батча для получения записей из бд.
     :param timestamp_field: Поле, по которому определяются обновленные записи.
     :param columns: столбцы, которые должны быть в ответе.
@@ -132,7 +127,9 @@ def table_with_fwkey_get_film_ids(film_work_id_field: str, target):
 
 @coroutine
 def get_table_ids_by_join(pg_url: str, select_field: str, join_table: str, join_field: str, target):
-    """Отправляет в target id фильмов, полученных пересечением входящих id с записями в join_table по join_field."""
+    """Отправляет в target поле (select_field) таблицы, полученное пересечением входящих id с записями в join_table по
+    join_field.
+    """
     while rows := (yield):
         ids = [row['id'] for row in rows]
         query = f"""SELECT t.{select_field} as id
@@ -193,7 +190,7 @@ def denormalize_film_data(pg_url: str, target):
 
 
 @coroutine
-def transform(target):
+def transform_movies_data(target):
     """Преобразует входящие записи в схему ElasticSearch."""
     while film_works := (yield):
         logger.debug('transforming')
@@ -245,20 +242,16 @@ def denormalize_person_data(pg_url: str, target):
         logger.debug("Denormalizing persons data.")
 
         query = """
-                    SELECT p.id, p.full_name, fwp.filmworks
-                    FROM "public".person p
-                    LEFT JOIN LATERAL ( 
-                    SELECT 
-                        pfw.id,
-                        array_agg(jsonb_build_object(
-                            'id', fw.id, 
-                            'title', fw.title
-                        )) AS filmworks
-                    FROM "public".person_film_work pfw
-                    JOIN "public".film_work fw ON fw.id = pfw.film_work_id
-                    WHERE pfw.person_id = p.id
-                    GROUP BY 1 
-                    ) fwp ON TRUE
+                    SELECT p.id, p.full_name, fwp.films 
+                    FROM person p 
+                    LEFT JOIN LATERAL (
+                        SELECT
+                            array_agg(jsonb_build_object(
+                            'id', pfw.film_work_id, 
+                            'role', pfw.role)) AS films 
+                        FROM person_film_work pfw 
+                        WHERE pfw.person_id = p.id
+                        ) fwp ON TRUE 
                     WHERE p.id = ANY(%(person_ids)s::uuid[])
         """
 
@@ -273,17 +266,17 @@ def transform_persons_data(target):
         logger.debug('transforming')
         batch = []
         for person in persons:
-            if not person['filmworks']:
-                person['filmworks'] = []
-
-            filmworks = [{'id': filmwork['id'], 'title': filmwork['title']}
-                         for filmwork in person['filmworks']]
-            filmwork_titles = [filmwork['title'] for filmwork in
-                               person['filmworks']]
+            if not person.get('film_ids'):
+                person['film_ids'] = []
+            if not person.get('roles'):
+                person['roles'] = set()
+            for person_film in person['films']:
+                person['film_ids'].append(person_film['id'])
+                person['roles'].add(person_film['role'])
             person = PersonElastic(id=str(person['id']),
                                    full_name=person['full_name'],
-                                   filmwork_titles=filmwork_titles,
-                                   filmworks=filmworks)
+                                   film_ids=person['film_ids'],
+                                   roles=list(person['roles']))
 
             batch.append(person.dict())
         target.send(batch)
@@ -381,7 +374,8 @@ if __name__ == '__main__':
                     *self.get_film_id_args,
                     denormalize_film_data(
                         self.postgres_url,
-                        transform(batcher(self.es_batch_size, load_to_elastic(self.elastic_host, self.elastic_index)))
+                        transform_movies_data(
+                            batcher(self.es_batch_size, load_to_elastic(self.elastic_host, self.elastic_index)))
                     )
                 ),
                 self.state, self.elastic_index, self.pg_batch_size, self.timestamp_field

@@ -54,7 +54,7 @@
           }
         }
       },
-      "filmwork_titles": {
+      "film_ids": {
         "type": "text",
         "analyzer": "ru_en",
         "fields": {
@@ -63,16 +63,12 @@
           }
         }
       },
-      "filmworks": {
-        "type": "nested",
-        "dynamic": "strict",
-        "properties": {
-          "id": {
+      "roles": {
+        "type": "text",
+        "analyzer": "ru_en",
+        "fields": {
+          "raw": {
             "type": "keyword"
-          },
-          "title": {
-            "type": "text",
-            "analyzer": "ru_en"
           }
         }
       }
