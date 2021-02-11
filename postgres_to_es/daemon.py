@@ -58,7 +58,7 @@ class MovieElastic(BaseModel):
 
 class PersonElastic(BaseModel):
     """Схема для ES документа с персонами."""
-    id: str
+    uuid: str
     full_name: str
     roles: List[str]
     film_ids: List[str]
@@ -273,7 +273,7 @@ def transform_persons_data(target):
             for person_film in person['films']:
                 person['film_ids'].append(person_film['id'])
                 person['roles'].add(person_film['role'])
-            person = PersonElastic(id=str(person['id']),
+            person = PersonElastic(uuid=str(person['id']),
                                    full_name=person['full_name'],
                                    film_ids=person['film_ids'],
                                    roles=list(person['roles']))
