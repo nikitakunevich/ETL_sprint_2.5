@@ -298,7 +298,7 @@ def batcher(batch_size, target):
 
 
 @coroutine
-def load_to_elastic(elastic_host, index):
+def load_to_elastic(elastic_host, index, id_field='id'):
     """Сохраняет входящие данные в ElasticSearch."""
     while docs := (yield):
         logger.debug('writing to ES')
@@ -311,7 +311,7 @@ def load_to_elastic(elastic_host, index):
             for doc in docs:
                 yield {
                     '_index': index,
-                    '_id': doc['id'],
+                    '_id': doc[id_field],
                     '_source': doc
                 }
 
@@ -398,7 +398,7 @@ if __name__ == '__main__':
                         transform_persons_data(
                             batcher(self.es_batch_size,
                                     load_to_elastic(self.elastic_host,
-                                                    self.elastic_index))
+                                                    self.elastic_index, 'uuid'))
                         )
                     )
                 ),
