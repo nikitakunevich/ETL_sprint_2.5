@@ -56,12 +56,25 @@ class MovieElastic(BaseModel):
     genres: List[Dict[ObjectId, ObjectName]]
 
 
+class Filmwork(BaseModel):
+    id: str
+    title: str
+    imdb_rating: Optional[float]
+
+
 class PersonElastic(BaseModel):
     """Схема для ES документа с персонами."""
     id: str
     full_name: str
     roles: List[str]
     film_ids: List[str]
+
+
+class GenreElastic(BaseModel):
+    """Схема для ES документа с жанрами."""
+    id: str
+    name: str
+    filmworks: List[Filmwork]
 
 
 @backoff()
@@ -88,7 +101,6 @@ def get_updated_postgres_entries(table: str, pg_url: str, target, state: State, 
     :param timestamp_field: Поле, по которому определяются обновленные записи.
     :param columns: столбцы, которые должны быть в ответе.
     """
-    # read state
     updated_at = datetime.fromisoformat(state.state_get_key(f'{table}.{es_index}.updated_at',
                                                             datetime_to_iso_string(
                                                                 datetime.fromtimestamp(0, tz=timezone.utc))))
@@ -107,7 +119,6 @@ def get_updated_postgres_entries(table: str, pg_url: str, target, state: State, 
 
     if rows:
         logger.info("Fetched {} updated rows from table {}", len(rows), table)
-
         target.send(rows)
         current_last_timestamp = datetime_to_iso_string(rows[-1][timestamp_field])
         current_last_id = str(rows[-1]['id'])
@@ -193,7 +204,7 @@ def denormalize_film_data(pg_url: str, target):
 def transform_movies_data(target):
     """Преобразует входящие записи в схему ElasticSearch."""
     while film_works := (yield):
-        logger.debug('transforming')
+        logger.debug('transforming movies data')
         batch = []
         for film_work in film_works:
             if not film_work['genres']:
@@ -263,7 +274,7 @@ def denormalize_person_data(pg_url: str, target):
 @coroutine
 def transform_persons_data(target):
     while persons := (yield):
-        logger.debug('transforming')
+        logger.debug('transforming persons data')
         batch = []
         for person in persons:
             if not person.get('film_ids'):
@@ -279,6 +290,55 @@ def transform_persons_data(target):
                                    roles=list(person['roles']))
 
             batch.append(person.dict())
+        target.send(batch)
+
+
+@coroutine
+def denormalize_genres_data(pg_url, target):
+    """Отправляет в target информацию о жанрах из нескольких таблиц для ElasticSearch."""
+    while genre_ids := (yield):
+        logger.debug("Denormalizing genres data.")
+
+        query = """
+                    SELECT g.id, g.name, fwg.filmworks
+                    FROM "public".genre g
+                    LEFT JOIN LATERAL ( 
+                    SELECT 
+                        gfw.id,
+                        array_agg(jsonb_build_object(
+                            'id', fw.id, 
+                            'title', fw.title,
+                            'imdb_rating', fw.rating
+                        )) AS filmworks
+                    FROM "public".genre_film_work gfw
+                    JOIN "public".film_work fw ON fw.id = gfw.film_work_id
+                    WHERE gfw.genre_id = g.id
+                    GROUP BY 1 
+                    ) fwg ON TRUE
+                    WHERE g.id = ANY(%(genre_ids)s::uuid[])
+        """
+
+        genres = query_postgresql(pg_url, query, {'genre_ids': genre_ids})
+        logger.debug("Extracted {} genres from database", len(genres))
+        target.send(genres)
+
+
+@coroutine
+def transform_genres_data(target):
+    while genres := (yield):
+        logger.debug('transforming genres data')
+        batch = []
+        for genre in genres:
+            if not genre['filmworks']:
+                genre['filmworks'] = []
+
+            filmworks = [{'id': filmwork['id'], 'title': filmwork['title'], 'imdb_rating': filmwork['imdb_rating']}
+                         for filmwork in genre['filmworks']]
+            genre = GenreElastic(id=str(genre['id']),
+                                 name=genre['name'],
+                                 filmworks=filmworks)
+
+            batch.append(genre.dict())
         target.send(batch)
 
 
@@ -362,8 +422,8 @@ if __name__ == '__main__':
         elastic_index: str = 'movies'
 
         timestamp_field: str = 'updated_at'
-        pg_batch_size: int = 1000
-        es_batch_size: int = 1000
+        pg_batch_size: int = 10000
+        es_batch_size: int = 10000
 
         def run(self):
             logger.debug(f"Running process for table: {self.table}")
@@ -409,35 +469,71 @@ if __name__ == '__main__':
             )
 
 
+    @dataclass(frozen=True)
+    class GenresETLProcessConfig(ETLProcessConfig):
+        elastic_index: str = 'genres'
+
+        def run(self):
+            logger.debug(f"Running process for table: {self.table}")
+            get_updated_postgres_entries(
+                self.table,
+                self.postgres_url,
+                self.film_id_function(
+                    *self.get_film_id_args,
+                    denormalize_genres_data(
+                        self.postgres_url,
+                        transform_genres_data(
+                            batcher(self.es_batch_size,
+                                    load_to_elastic(self.elastic_host,
+                                                    self.elastic_index))
+                        )
+                    )
+                ),
+                self.state,
+                self.elastic_index,
+                self.pg_batch_size,
+                self.timestamp_field
+            )
+
+
     etl_processes = [
         ETLProcessConfig(table="public.film_work", postgres_url=args.postgres_url, elastic_host=args.elastic_host,
-                         film_id_function=table_with_fwkey_get_film_ids, get_film_id_args=('id',), state=state),
+                         film_id_function=table_with_fwkey_get_film_ids, get_film_id_args=('id',), state=state,
+                         pg_batch_size=args.pg_batch_size, es_batch_size=args.es_batch_size),
 
         ETLProcessConfig(table="public.person", postgres_url=args.postgres_url, elastic_host=args.elastic_host,
                          film_id_function=get_table_ids_by_join,
                          get_film_id_args=(args.postgres_url, "film_work_id", "public.person_film_work", "person_id"),
-                         state=state),
+                         state=state, pg_batch_size=args.pg_batch_size, es_batch_size=args.es_batch_size),
 
         ETLProcessConfig(table="public.genre", postgres_url=args.postgres_url, elastic_host=args.elastic_host,
                          film_id_function=get_table_ids_by_join,
                          get_film_id_args=(args.postgres_url, "film_work_id", "public.genre_film_work", "genre_id"),
-                         state=state),
+                         state=state, pg_batch_size=args.pg_batch_size, es_batch_size=args.es_batch_size),
 
         ETLProcessConfig(table="public.person_film_work", postgres_url=args.postgres_url,
                          elastic_host=args.elastic_host, film_id_function=table_with_fwkey_get_film_ids,
                          get_film_id_args=("film_work_id",), timestamp_field='created_at',
-                         state=state),
+                         state=state, pg_batch_size=args.pg_batch_size, es_batch_size=args.es_batch_size),
 
         ETLProcessConfig(table="public.genre_film_work", postgres_url=args.postgres_url,
                          elastic_host=args.elastic_host, film_id_function=table_with_fwkey_get_film_ids,
                          get_film_id_args=("film_work_id",), timestamp_field='created_at',
-                         state=state),
+                         state=state, pg_batch_size=args.pg_batch_size, es_batch_size=args.es_batch_size),
 
         PersonsETLProcessConfig(table="public.person", postgres_url=args.postgres_url, elastic_host=args.elastic_host,
                                 film_id_function=get_table_ids_by_join,
                                 get_film_id_args=(
-                                args.postgres_url, "person_id", "public.person_film_work", "person_id"),
-                                timestamp_field='created_at', state=state),
+                                    args.postgres_url, "person_id", "public.person_film_work", "person_id"),
+                                timestamp_field='created_at', state=state, pg_batch_size=args.pg_batch_size,
+                                es_batch_size=args.es_batch_size),
+
+        GenresETLProcessConfig(table="public.genre", postgres_url=args.postgres_url, elastic_host=args.elastic_host,
+                               film_id_function=get_table_ids_by_join,
+                               get_film_id_args=(
+                                   args.postgres_url, "genre_id", "public.genre_film_work", "genre_id"),
+                               timestamp_field='created_at', state=state, pg_batch_size=args.pg_batch_size,
+                               es_batch_size=args.es_batch_size),
     ]
 
     while True:

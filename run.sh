@@ -23,8 +23,9 @@ case $1 in
     docker-compose logs -f
   ;;
   load_es_index)
-    curl  -XPUT http://localhost:9200/movies -H 'Content-Type: application/json' -d @es.schema.json
-    curl  -XPUT http://localhost:9200/persons -H 'Content-Type: application/json' -d @es.persons.schema.json
+    curl  -XPUT http://localhost:9200/movies -H 'Content-Type: application/json' -d @movies.es.schema.json
+    curl  -XPUT http://localhost:9200/persons -H 'Content-Type: application/json' -d @persons.es.schema.json
+    curl  -XPUT http://localhost:9200/genres -H 'Content-Type: application/json' -d @genres.es.schema.json
   ;;
   start_etl)
     docker-compose up etl
