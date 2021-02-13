@@ -101,7 +101,6 @@ def get_updated_postgres_entries(table: str, pg_url: str, target, state: State, 
     :param timestamp_field: Поле, по которому определяются обновленные записи.
     :param columns: столбцы, которые должны быть в ответе.
     """
-    # read state
     updated_at = datetime.fromisoformat(state.state_get_key(f'{table}.{es_index}.updated_at',
                                                             datetime_to_iso_string(
                                                                 datetime.fromtimestamp(0, tz=timezone.utc))))
@@ -143,8 +142,6 @@ def get_table_ids_by_join(pg_url: str, select_field: str, join_table: str, join_
     join_field.
     """
     while rows := (yield):
-        # if select_field == 'genre_id':
-        #     logger.debug("rows: {!r}", rows)
         ids = [row['id'] for row in rows]
         query = f"""SELECT t.{select_field} as id
         FROM {join_table} t
@@ -152,8 +149,6 @@ def get_table_ids_by_join(pg_url: str, select_field: str, join_table: str, join_
         """
         rows = query_postgresql(pg_url, query, {'ids': ids})
         if rows:
-            # if select_field == 'genre_id':
-            #     logger.debug("new rows: {!r}", rows)
             target.send([row['id'] for row in rows])
 
 
@@ -209,7 +204,7 @@ def denormalize_film_data(pg_url: str, target):
 def transform_movies_data(target):
     """Преобразует входящие записи в схему ElasticSearch."""
     while film_works := (yield):
-        logger.debug('transforming')
+        logger.debug('transforming movies data')
         batch = []
         for film_work in film_works:
             if not film_work['genres']:
@@ -279,7 +274,7 @@ def denormalize_person_data(pg_url: str, target):
 @coroutine
 def transform_persons_data(target):
     while persons := (yield):
-        logger.debug('transforming')
+        logger.debug('transforming persons data')
         batch = []
         for person in persons:
             if not person.get('film_ids'):
@@ -331,7 +326,7 @@ def denormalize_genres_data(pg_url, target):
 @coroutine
 def transform_genres_data(target):
     while genres := (yield):
-        logger.debug('transforming')
+        logger.debug('transforming genres data')
         batch = []
         for genre in genres:
             if not genre['filmworks']:
