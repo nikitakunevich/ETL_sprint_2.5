@@ -304,7 +304,6 @@ def denormalize_genres_data(pg_url, target):
                     FROM "public".genre g
                     LEFT JOIN LATERAL ( 
                     SELECT 
-                        gfw.id,
                         array_agg(jsonb_build_object(
                             'id', fw.id, 
                             'title', fw.title,
@@ -313,7 +312,6 @@ def denormalize_genres_data(pg_url, target):
                     FROM "public".genre_film_work gfw
                     JOIN "public".film_work fw ON fw.id = gfw.film_work_id
                     WHERE gfw.genre_id = g.id
-                    GROUP BY 1 
                     ) fwg ON TRUE
                     WHERE g.id = ANY(%(genre_ids)s::uuid[])
         """
