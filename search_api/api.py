@@ -40,7 +40,6 @@ httpclient = requests.Session()
 
 @app.route("/api/movies/<string:movie_id>", methods=["GET"])
 def movie_info(movie_id: str) -> str:
-    movie = None
     query = {
         "query": {
             "match": {
@@ -108,7 +107,7 @@ def movies_list() -> str:
 
     result = response.json()
     hits = result["hits"]["hits"]
-    movies = [MovieModel(**hit["_source"], genres=hit['_source']['genres_names']) for hit in hits]
+    movies = [MovieModel(**hit["_source"]) for hit in hits]
     return jsonify([movie.dict() for movie in movies])
 
 

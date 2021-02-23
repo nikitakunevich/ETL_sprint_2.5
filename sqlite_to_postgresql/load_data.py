@@ -1,6 +1,8 @@
 import argparse
 import contextlib
+import os
 import sqlite3
+import logging
 
 import psycopg2
 from psycopg2.extras import DictCursor
@@ -8,6 +10,7 @@ from psycopg2.extras import DictCursor
 from etl import (fetch_sqlite_data, migrate_data_to_new_schema,
                  sqlite_dict_connection_factory, write_data_to_postgres)
 
+logging.basicConfig(level=os.environ.get('LOG_LEVEL', 'INFO'))
 
 def parse_args():
     parser = argparse.ArgumentParser(

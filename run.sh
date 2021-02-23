@@ -11,7 +11,7 @@ case $1 in
     ./run.sh stop
     ./run.sh rebuild
     docker-compose up -d movies_admin postgres nginx
-    docker-compose run -v $(pwd)/sqlite_to_postgresql:/sqlite_to_postgresql -w /sqlite_to_postgresql movies_admin python load_data.py --from db.sqlite --to "dbname=${PG_DB} user=${PG_USER} host=${PG_HOST} password=${PG_PASS}" --init postgres_init.sql
+    docker-compose run -v $(pwd)/sqlite_to_postgresql:/sqlite_to_postgresql -w /sqlite_to_postgresql movies_admin python load_data.py --from db.sqlite --to "dbname=${PG_DB} user=${PG_USER} host=${PG_HOST} password=${PG_PASS}" --init postgres_init.sql || exit 1
     docker-compose exec movies_admin ./manage.py migrate
     docker-compose exec movies_admin ./manage.py collectstatic --no-input
     docker-compose exec movies_admin /bin/sh -c 'echo "creating admin user"'

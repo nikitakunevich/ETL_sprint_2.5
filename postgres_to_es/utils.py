@@ -39,7 +39,7 @@ def backoff(start_sleep_time=0.1, factor=2, border_sleep_time=10):
             nonlocal next_sleep_time
             try:
                 return func(*args, **kwargs)
-            except Exception as e:
+            except Exception:
                 logger.opt(exception=True).warning('Got exception in backoff:')
                 time.sleep(next_sleep_time)
                 if next_sleep_time >= border_sleep_time:

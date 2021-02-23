@@ -5,8 +5,9 @@
 import json
 import sqlite3
 from dataclasses import astuple
-from typing import List, Sequence, Callable, Any
-from uuid import uuid4
+from typing import List, Sequence, Callable, Any, Dict, TypedDict, NamedTuple, Literal
+from uuid import uuid4, UUID
+import logging
 
 import psycopg2
 import psycopg2.extras
@@ -16,6 +17,8 @@ from models import (
     OriginalData, TransformedFilmWork, TransformedPerson, TransformedFilmWorkPerson,
     TransformedGenre, TransformedFilmWorkGenre,
     TransformedData)
+
+logger = logging.getLogger(__name__)
 
 
 def sqlite_dict_factory(cursor, row):
@@ -44,6 +47,7 @@ def to_none_if_empty(value):
 
 
 def clean_original_movie_fields(movie):
+    """Если какое-то поле заполнено пустым значением, то заменить его на None."""
     return OriginalMovie(
         id=movie.id,
         genre=to_none_if_empty(movie.genre),
@@ -113,15 +117,6 @@ def fetch_sqlite_data(connection) -> OriginalData:
     )
 
 
-def update_transformed_persons(original_persons, transformed_persons,
-                               persons_cache, name_getter: Callable[[Any], str]):
-    for person in original_persons:
-        if person not in persons_cache:
-            transformed_person = TransformedPerson(id=uuid4(), full_name=name_getter(person))
-            persons_cache[person] = transformed_person.id
-            transformed_persons.append(transformed_person)
-
-
 def update_transformed_genres(original_movie, transformed_genres, genres_name_to_new_id):
     for genre in original_movie.get_genres():
         if genre not in genres_name_to_new_id:
@@ -130,13 +125,10 @@ def update_transformed_genres(original_movie, transformed_genres, genres_name_to
             transformed_genres.append(transformed_genre)
 
 
-def get_transformed_movie_persons(transformed_movie, original_persons, persons_cache, role):
-    transformed_movie_persons = []
-    for original_id in original_persons:
-        movie_person = TransformedFilmWorkPerson(uuid4(), transformed_movie.id,
-                                                 persons_cache[original_id], role)
-        transformed_movie_persons.append(movie_person)
-    return transformed_movie_persons
+MovieId = UUID
+Role = Literal['actor', 'director', 'writer']
+FullName = str
+MoviesRoles = Dict[MovieId, List[Role]]
 
 
 def migrate_data_to_new_schema(original_data: OriginalData) -> TransformedData:
@@ -144,11 +136,10 @@ def migrate_data_to_new_schema(original_data: OriginalData) -> TransformedData:
 
     cleaned_movies = [clean_original_movie_fields(movie) for movie in original_data.movies]
 
+    person_movies_roles: Dict[FullName, MoviesRoles] = {}
+
     # Кэш old_id -> new_id уже созданных объектов.
-    directors_name_to_new_id = dict()  # name -> id
     genres_name_to_new_id = dict()  # name -> id
-    actors_old_id_to_new_id = dict()  # old_id -> new_id
-    writers_old_id_to_new_id = dict()  # old_id -> new_id
 
     transformed_movie_persons: List[TransformedFilmWorkPerson] = []
     transformed_movie_genres: List[TransformedFilmWorkGenre] = []
@@ -174,20 +165,33 @@ def migrate_data_to_new_schema(original_data: OriginalData) -> TransformedData:
 
         # ------------ Создание объектов таблиц person и movie_person. --------------------
 
-        # Обновляем список режиссеров
-        update_person_role_list(directors_name_to_new_id, original_movie.get_directors(), transformed_movie,
-                                transformed_movie_persons,
-                                transformed_persons, lambda _id: _id, 'director')
+        # заполнить список Людей и инфы о них person_movies_roles
+        for director_name in original_movie.get_directors():
+            movies_roles = person_movies_roles.setdefault(director_name, {transformed_movie.id: []})
+            # noinspection PyTypeChecker
+            movies_roles.setdefault(transformed_movie.id, []).append('director')
 
-        # Обновляем список актеров
-        update_person_role_list(actors_old_id_to_new_id, original_data.movie_actors.get(original_movie.id, []),
-                                transformed_movie, transformed_movie_persons, transformed_persons,
-                                lambda old_id: original_data.actor_names[old_id], 'actor')
-        
-        # Обновляем список писателей
-        update_person_role_list(writers_old_id_to_new_id, original_movie.writers,
-                                transformed_movie, transformed_movie_persons, transformed_persons,
-                                lambda old_id: original_data.writer_names[old_id], 'writers')
+        movie_actors = original_data.movie_actors.get(original_movie.id, [])
+        for actor_id in movie_actors:
+            actor_name = original_data.actor_names[actor_id]
+            movies_roles = person_movies_roles.setdefault(actor_name, {transformed_movie.id: []})
+            # noinspection PyTypeChecker
+            movies_roles.setdefault(transformed_movie.id, []).append('actor')
+
+        for writer_id in original_movie.writers:
+            writer_name = original_data.writer_names[writer_id]
+            movies_roles = person_movies_roles.setdefault(writer_name, {transformed_movie.id: []})
+            # noinspection PyTypeChecker
+            movies_roles.setdefault(transformed_movie.id, []).append('writer')
+
+    # create persons list
+    for full_name, movies_roles in person_movies_roles.items():
+        person_id = uuid4()
+        transformed_persons.append(TransformedPerson(id=person_id, full_name=full_name))
+        for movie_id, roles in movies_roles.items():
+            for role in roles:
+                tfwp = TransformedFilmWorkPerson(id=uuid4(), film_work_id=movie_id, person_id=person_id, role=role)
+                transformed_movie_persons.append(tfwp)
 
     return TransformedData(
         film_works=transformed_movies,
@@ -196,19 +200,6 @@ def migrate_data_to_new_schema(original_data: OriginalData) -> TransformedData:
         film_work_genres=transformed_movie_genres,
         genres=transformed_genres,
     )
-
-
-def update_person_role_list(old_id_to_new_id, person_list, transformed_movie, transformed_movie_persons,
-                            transformed_persons, name_getter, role):
-    update_transformed_persons(person_list,
-                               transformed_persons,
-                               old_id_to_new_id,
-                               name_getter)
-    role_persons_list = get_transformed_movie_persons(
-        transformed_movie, person_list,
-        old_id_to_new_id, role
-    )
-    transformed_movie_persons.extend(role_persons_list)
 
 
 def insert_rows_into_table(cursor, table_name: str, rows: Sequence[Sequence]):
