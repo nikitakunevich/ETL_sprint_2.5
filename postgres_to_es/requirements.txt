@@ -1,5 +1,5 @@
 elasticsearch==7.10.1
 loguru==0.5.3
 psycopg2-binary==2.8.6
-pydantic==1.7.3
+pydantic==1.7.4
 redis==3.5.3
